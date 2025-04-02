@@ -3,7 +3,7 @@
     <entity name="Item" representedClassName="Item" syncable="YES" codeGenerationType="class">
         <attribute name="timestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
     </entity>
-    <entity name="PlayedTrack" representedClassName="PlayedTrack" syncable="YES" codeGenerationType="category">
+    <entity name="PlayedTrack" representedClassName="PlayedTrack" syncable="YES">
         <attribute name="album" optional="YES" attributeType="String"/>
         <attribute name="artist" attributeType="String"/>
         <attribute name="artworkUrl" optional="YES" attributeType="String"/>

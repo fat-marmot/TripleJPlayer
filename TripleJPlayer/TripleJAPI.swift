@@ -27,11 +27,7 @@ class TripleJAPI: ObservableObject {
     
     func fetchNowPlaying() {
         print("Fetching now playing data...")
-        guard let url = apiURL else {
-            print("Invalid URL")
-            scheduleNextUpdate(afterSeconds: 30)
-            return
-        }
+        let url = apiURL
         
         isLoading = true
         lastErrorMessage = nil
