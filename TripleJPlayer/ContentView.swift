@@ -13,10 +13,18 @@ struct ContentView: View {
                 // Now Playing section
                 VStack(spacing: 8) {
                     HStack {
-                        Text("Now Playing - triple j")
+                        Text(tripleJAPI.currentTrack.isPresenterSegment ? "On Air - triple j" : "Now Playing - triple j")
                             .font(.subheadline)
                             .foregroundColor(.white.opacity(0.7))
                         Spacer()
+                        
+                        // Add a loading indicator when fetching data
+                        if tripleJAPI.isLoading {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                                .padding(.trailing, 8)
+                        }
+                        
                         Button(action: {
                             // Manual refresh action
                             tripleJAPI.fetchNowPlaying()
@@ -27,20 +35,28 @@ struct ContentView: View {
                         }
                     }
                     
-                    // Playback indicators
+                    // Playback indicators - show different indicator for presenter segments
                     HStack(spacing: 4) {
-                        Circle()
-                            .frame(width: 6, height: 6)
-                            .foregroundColor(.white)
-                        ForEach(1..<4) { _ in
+                        if tripleJAPI.currentTrack.isPresenterSegment {
+                            // Show a microphone icon for presenter segments
+                            Image(systemName: "mic.fill")
+                                .foregroundColor(.red)
+                                .font(.system(size: 14))
+                        } else {
+                            // Show the regular playback indicators for music
                             Circle()
                                 .frame(width: 6, height: 6)
-                                .foregroundColor(.white.opacity(0.3))
+                                .foregroundColor(.white)
+                            ForEach(1..<4) { _ in
+                                Circle()
+                                    .frame(width: 6, height: 6)
+                                    .foregroundColor(.white.opacity(0.3))
+                            }
                         }
                     }
                     .padding(.vertical, 8)
                     
-                    // Album artwork
+                    // Album artwork with presenter overlay when needed
                     AsyncImage(url: tripleJAPI.currentTrack.artwork) { phase in
                         switch phase {
                         case .empty:
@@ -51,6 +67,26 @@ struct ContentView: View {
                             image
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
+                                .overlay(
+                                    Group {
+                                        if tripleJAPI.currentTrack.isPresenterSegment {
+                                            ZStack {
+                                                Color.black.opacity(0.6)
+                                                VStack {
+                                                    Image(systemName: "mic.fill")
+                                                        .font(.system(size: 50))
+                                                        .foregroundColor(.red)
+                                                    
+                                                    Text("ON AIR")
+                                                        .font(.title)
+                                                        .fontWeight(.bold)
+                                                        .foregroundColor(.white)
+                                                        .padding(.top, 8)
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
                         case .failure:
                             Image(systemName: "music.note")
                                 .font(.system(size: 70))
@@ -64,7 +100,7 @@ struct ContentView: View {
                     .frame(width: 200, height: 200)
                     .cornerRadius(4)
                     
-                    // Track info
+                    // Track info - adjusted for presenter segments
                     Text(tripleJAPI.currentTrack.title)
                         .font(.title)
                         .foregroundColor(.white)
@@ -72,18 +108,34 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                         .padding(.top, 4)
                     
-                    Text(tripleJAPI.currentTrack.artist)
-                        .font(.title3)
-                        .foregroundColor(.white)
-                        .padding(.top, 2)
+                    // Show different text based on whether it's a presenter segment
+                    if tripleJAPI.currentTrack.isPresenterSegment {
+                        Text("Live Broadcast")
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .padding(.top, 2)
+                    } else {
+                        Text(tripleJAPI.currentTrack.artist)
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .padding(.top, 2)
+                        
+                        Text(tripleJAPI.currentTrack.album)
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(.bottom, 8)
+                    }
                     
-                    Text(tripleJAPI.currentTrack.album)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(.bottom, 8)
+                    // Show error message if there is one
+                    if let errorMessage = tripleJAPI.lastErrorMessage {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .padding(.top, 4)
+                    }
                 }
                 .padding()
-                .background(Color.brown.opacity(0.6))
+                .background(tripleJAPI.currentTrack.isPresenterSegment ? Color.red.opacity(0.4) : Color.brown.opacity(0.6))
                 .cornerRadius(16)
                 .padding(.horizontal)
                 .padding(.top)
