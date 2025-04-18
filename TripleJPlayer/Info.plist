@@ -11,5 +11,13 @@
 	<array>
 		<dict/>
 	</array>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.yourcompany.TripleJPlayer</string>
+	<key>CFBundleName</key>
+	<string>Triple J Player</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>This app uses Bluetooth to stream audio to Bluetooth devices</string>
 </dict>
 </plist>

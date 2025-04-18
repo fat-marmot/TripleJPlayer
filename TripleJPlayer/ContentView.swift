@@ -1,4 +1,6 @@
 import SwiftUI
+import AVKit
+import AppKit
 
 struct ContentView: View {
     @StateObject private var audioPlayer = AudioPlayerService()
@@ -6,56 +8,71 @@ struct ContentView: View {
     @State private var showDebug = false
     @State private var selectedTrackId: UUID? = nil
     @State private var showTrackDetails = false
+    @State private var volume: Float = 1.0
     
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                // Now Playing section
-                VStack(spacing: 8) {
-                    HStack {
-                        Text(tripleJAPI.currentTrack.isPresenterSegment ? "On Air - triple j" : "Now Playing - triple j")
-                            .font(.subheadline)
+                // Top control bar
+                HStack(spacing: 12) {
+                    // Play/Pause Button
+                    Button(action: {
+                        audioPlayer.togglePlayPause()
+                    }) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 44, height: 44)
+                            .overlay(
+                                Image(systemName: audioPlayer.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.title3)
+                                    .foregroundColor(.white)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    
+                    // Volume Slider
+                    HStack(spacing: 8) {
+                        Image(systemName: "speaker.wave.1.fill")
                             .foregroundColor(.white.opacity(0.7))
-                        Spacer()
                         
-                        // Add a loading indicator when fetching data
-                        if tripleJAPI.isLoading {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                                .padding(.trailing, 8)
+                        VolumeSlider(volume: $volume) { newVolume in
+                            audioPlayer.setVolume(newVolume)
                         }
+                        .frame(height: 20)
                         
-                        Button(action: {
-                            // Manual refresh action
-                            tripleJAPI.fetchNowPlaying()
-                            print("Manual refresh triggered")
-                        }) {
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.white.opacity(0.7))
-                        }
+                        Image(systemName: "speaker.wave.3.fill")
+                            .foregroundColor(.white.opacity(0.7))
                     }
                     
-                    // Playback indicators - show different indicator for presenter segments
-                    HStack(spacing: 4) {
-                        if tripleJAPI.currentTrack.isPresenterSegment {
-                            // Show a microphone icon for presenter segments
-                            Image(systemName: "mic.fill")
-                                .foregroundColor(.red)
-                                .font(.system(size: 14))
-                        } else {
-                            // Show the regular playback indicators for music
-                            Circle()
-                                .frame(width: 6, height: 6)
-                                .foregroundColor(.white)
-                            ForEach(1..<4) { _ in
-                                Circle()
-                                    .frame(width: 6, height: 6)
-                                    .foregroundColor(.white.opacity(0.3))
-                            }
-                        }
-                    }
-                    .padding(.vertical, 8)
+                    // AirPlay Button
+                    AirPlayButton()
+                        .frame(width: 40, height: 30)
                     
+                    Spacer()
+                    
+                    // Loading indicator
+                    if tripleJAPI.isLoading {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                            .padding(.trailing, 8)
+                    }
+                    
+                    // Debug Button (icon only)
+                    Button(action: {
+                        showDebug.toggle()
+                    }) {
+                        Image(systemName: "info.circle")
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show/Hide Debug Information")
+                }
+                .padding(.horizontal)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                
+                // Main Content Area - Now Playing + Condensed Program Info
+                VStack(spacing: 8) {
                     // Album artwork with presenter overlay when needed
                     AsyncImage(url: tripleJAPI.currentTrack.artwork) { phase in
                         switch phase {
@@ -123,24 +140,56 @@ struct ContentView: View {
                         Text(tripleJAPI.currentTrack.album)
                             .font(.subheadline)
                             .foregroundColor(.white.opacity(0.7))
-                            .padding(.bottom, 8)
+                            .padding(.bottom, 4)
                     }
                     
-                    // Show error message if there is one
-                    if let errorMessage = tripleJAPI.lastErrorMessage {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .padding(.top, 4)
+                    // Condensed Program Info Section
+                    VStack(spacing: 4) {
+                        HStack {
+                            Image(systemName: "radio.fill")
+                                .foregroundColor(.red)
+                                .font(.system(size: 12))
+                            
+                            Text(tripleJAPI.currentProgram.title)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white)
+                            
+                            if !tripleJAPI.currentProgram.presenter.isEmpty {
+                                Text("with \(tripleJAPI.currentProgram.presenter)")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                            
+                            Spacer()
+                            
+                            if !tripleJAPI.currentProgram.startTime.isEmpty && !tripleJAPI.currentProgram.endTime.isEmpty {
+                                Text("\(tripleJAPI.currentProgram.startTime) - \(tripleJAPI.currentProgram.endTime)")
+                                    .font(.caption2)
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 10)
                     }
+                    .background(Color.blue.opacity(0.4))
+                    .cornerRadius(8)
+                    .padding(.horizontal, 4)
                 }
                 .padding()
                 .background(tripleJAPI.currentTrack.isPresenterSegment ? Color.red.opacity(0.4) : Color.brown.opacity(0.6))
                 .cornerRadius(16)
                 .padding(.horizontal)
-                .padding(.top)
                 
-                // In the Recently Played section:
+                // Show error message if there is one
+                if let errorMessage = tripleJAPI.lastErrorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.top, 4)
+                }
+                
+                // Recently Played section
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         Text("Recently Played")
@@ -153,16 +202,6 @@ struct ContentView: View {
                         Text("\(tripleJAPI.recentTracks.count) tracks")
                             .font(.caption)
                             .foregroundColor(.white.opacity(0.6))
-                        
-                        // Add a manual refresh button
-                        Button(action: {
-                            print("Manual refresh of recent tracks triggered")
-                            tripleJAPI.fetchNowPlaying()
-                        }) {
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                        .padding(.leading, 8)
                     }
                     .padding(.top, 20)
                     .padding(.horizontal)
@@ -174,27 +213,10 @@ struct ContentView: View {
                             
                             Text("Loading recent tracks...")
                                 .foregroundColor(.white.opacity(0.7))
-                            
-                            // Add debug info
-                            Text("Recent tracks array: \(tripleJAPI.recentTracks.count) items")
-                                .font(.caption)
-                                .foregroundColor(.yellow)
-                                .padding(.top, 10)
-                            
-                            Button("Force Refresh") {
-                                print("Force refreshing now playing data")
-                                tripleJAPI.fetchNowPlaying()
-                            }
-                            .padding(.top, 10)
                         }
                         .frame(maxWidth: .infinity, minHeight: 100)
                         .padding()
                     } else {
-                        Text("Showing \(tripleJAPI.recentTracks.count) recent tracks")
-                            .font(.caption)
-                            .foregroundColor(.yellow)
-                            .padding(.horizontal)
-                        
                         ScrollView {
                             LazyVStack(spacing: 0) {
                                 ForEach(tripleJAPI.recentTracks) { track in
@@ -247,13 +269,19 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundColor(.white)
                         
-                        Text("Artwork URL: \(tripleJAPI.currentTrack.artwork.absoluteString)")
+                        Text("Recent tracks count: \(tripleJAPI.recentTracks.count)")
                             .font(.caption)
                             .foregroundColor(.white)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
                         
-                        Text("Recent tracks count: \(tripleJAPI.recentTracks.count)")
+                        Text("Current Program: \(tripleJAPI.currentProgram.title)")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                        
+                        Text("Player State: \(audioPlayer.isPlaying ? "Playing" : "Paused")")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            
+                        Text("Volume: \(Int(volume * 100))%")
                             .font(.caption)
                             .foregroundColor(.white)
                     }
@@ -262,49 +290,18 @@ struct ContentView: View {
                     .background(Color.black.opacity(0.8))
                     .cornerRadius(8)
                     .padding(.horizontal)
-                    .onAppear {
-                        print("ContentView appeared")
-                        print("Initial recent tracks count: \(tripleJAPI.recentTracks.count)")
-                        // Force an immediate refresh when view appears
-                        tripleJAPI.fetchNowPlaying()
-                    }
                 }
-                
-                // Debug toggle
-                Button(action: {
-                    showDebug.toggle()
-                }) {
-                    Text(showDebug ? "Hide Debug Info" : "Show Debug Info")
-                        .font(.caption)
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.gray.opacity(0.3))
-                        .cornerRadius(4)
-                        .foregroundColor(.white)
-                }
-                .padding(.bottom, 8)
-                
-                // Play/Pause button at the bottom
-                Button(action: {
-                    audioPlayer.togglePlayPause()
-                }) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 60, height: 60)
-                        .overlay(
-                            Image(systemName: audioPlayer.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.title)
-                                .foregroundColor(.white)
-                        )
-                }
-                .padding(.bottom, 20)
             }
-            .frame(minWidth: 400, minHeight: 600)
+            .frame(width: 400, height: 720)
             .background(Color.black)
             .onAppear {
                 print("ContentView appeared")
+                // Initialize volume binding to match audio player
+                volume = audioPlayer.currentVolume
                 // Force an immediate refresh when view appears
                 tripleJAPI.fetchNowPlaying()
+                tripleJAPI.fetchRecentTracks()
+                tripleJAPI.fetchProgramInfo()
             }
             
             // Track detail popup
@@ -326,6 +323,7 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Recent Track Row
 struct RecentTrackRow: View {
     let track: Track
     
@@ -396,6 +394,7 @@ struct RecentTrackRow: View {
     }
 }
 
+// MARK: - Track Detail View
 struct TrackDetailView: View {
     let track: Track
     
@@ -491,4 +490,5 @@ struct TrackDetailView: View {
 
 #Preview {
     ContentView()
+        .preferredColorScheme(.dark)
 }

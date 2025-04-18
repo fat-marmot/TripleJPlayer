@@ -2,37 +2,54 @@ import Foundation
 import Combine
 
 class TripleJAPI: ObservableObject {
+    // Published properties
     @Published var currentTrack: Track = Track.placeholder
     @Published var recentTracks: [Track] = []
+    @Published var currentProgram: Program = Program.placeholder
     @Published var isLoading: Bool = false
     @Published var lastErrorMessage: String? = nil
     
-    private var timer: Timer?
-    private var recentTracksFromAPI: [Track] = []
+    // Timers and state
+    private var nowPlayingTimer: Timer?
+    private var programInfoTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     
-    // API endpoint
-    private let apiURL = URL(string: "https://music.abcradio.net.au/api/v1/plays/triplej/now.json?tz=Australia%2FSydney")!
+    // API endpoints
+    private let nowPlayingURL = URL(string: "https://music.abcradio.net.au/api/v1/plays/triplej/now.json?tz=Australia%2FSydney")!
+    private let recentTracksURL = URL(string: "https://music.abcradio.net.au/api/v1/plays/search.json?station=triplej&order=desc&tz=Australia%2FSydney&limit=20")!
+    
+    // For program info, we'll need to dynamically create the URL with current date
+    private func createProgramInfoURL() -> URL {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH'%3A'mm'%3A'ss"
+        
+        let now = Date()
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: now)!
+        
+        let fromDate = dateFormatter.string(from: now)
+        let toDate = dateFormatter.string(from: tomorrow)
+        
+        let urlString = "https://program.abcradio.net.au/api/v1/programitems/search.json?include=next%2Cwith_images%2Cresized_images&service=triplej&from=\(fromDate)&to=\(toDate)&order_by=ppe_date&order=asc&limit=10"
+        
+        return URL(string: urlString)!
+    }
     
     init() {
         print("TripleJAPI initialized")
-        fetchNowPlaying()
         
-        // Add this debug line to check if we can retrieve tracks from CoreData
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-            let savedTracks = TrackStore.shared.fetchRecentTracks()
-            print("TEST: Found \(savedTracks.count) tracks in CoreData")
-        }
+        // Initial data fetch
+        fetchNowPlaying()
+        fetchRecentTracks()
+        fetchProgramInfo()
     }
     
+    // MARK: - Now Playing Functions
     func fetchNowPlaying() {
         print("Fetching now playing data...")
-        let url = apiURL
-        
         isLoading = true
         lastErrorMessage = nil
         
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+        URLSession.shared.dataTask(with: nowPlayingURL) { [weak self] data, response, error in
             defer {
                 DispatchQueue.main.async {
                     self?.isLoading = false
@@ -40,36 +57,39 @@ class TripleJAPI: ObservableObject {
             }
             
             if let error = error {
-                print("Error fetching data: \(error.localizedDescription)")
+                print("Error fetching now playing data: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self?.lastErrorMessage = "Connection error: \(error.localizedDescription)"
                 }
-                self?.scheduleNextUpdate(afterSeconds: 30)
+                self?.scheduleNextNowPlayingUpdate(afterSeconds: 30)
                 return
             }
             
             guard let data = data else {
-                print("No data received")
+                print("No data received from now playing API")
                 DispatchQueue.main.async {
                     self?.lastErrorMessage = "No data received from API"
                 }
-                self?.scheduleNextUpdate(afterSeconds: 30)
+                self?.scheduleNextNowPlayingUpdate(afterSeconds: 30)
                 return
             }
             
             do {
+                // Log the JSON response for debugging if needed
                 if let jsonString = String(data: data, encoding: .utf8) {
-                    print("Raw JSON response (first 200 chars): \(String(jsonString.prefix(200)))...")
+                    print("Raw JSON first 200 chars: \(String(jsonString.prefix(200)))...")
                 }
                 
                 let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
                 
-                // Schedule next update based on next_updated timestamp
+                // Most important: Schedule next update based on next_updated timestamp
                 if let nextUpdateString = json?["next_updated"] as? String {
-                    self?.scheduleUpdateBasedOnTimestamp(nextUpdateString)
+                    print("Found next_updated timestamp: \(nextUpdateString)")
+                    self?.scheduleNowPlayingUpdateBasedOnTimestamp(nextUpdateString)
                 } else {
                     // Fallback to fixed interval if next_updated is missing
-                    self?.scheduleNextUpdate(afterSeconds: 30)
+                    print("No next_updated timestamp found in response")
+                    self?.scheduleNextNowPlayingUpdate(afterSeconds: 30)
                 }
                 
                 // Process "now" track
@@ -82,71 +102,80 @@ class TripleJAPI: ObservableObject {
                         }
                     }
                 } else {
-                    // Empty "now" object means a presenter is speaking
+                    // Empty "now" object typically means a presenter is speaking
                     print("No current track - presenter segment")
                     DispatchQueue.main.async {
                         self?.currentTrack = Track.presenterSegment
                     }
                 }
-
-                // Process "prev" track - Save ONLY here
-                if let prev = json?["prev"] as? [String: Any], !prev.isEmpty {
-                    print("Found 'prev' data")
-                    if let previousTrack = self?.processTrackData(prev, isNowPlaying: false) {
-                        DispatchQueue.main.async {
-                            // Create a single-item array with the previous track
-                            self?.recentTracksFromAPI = [previousTrack]
-                            
-                            // Save to CoreData only when track appears in "prev"
-                            TrackStore.shared.saveTrack(previousTrack)
-                            
-                            // Load combined tracks
-                            self?.loadRecentTracks()
-                            print("Updated recent tracks with previous track: \(previousTrack.title) by \(previousTrack.artist)")
-                        }
-                    }
-                } else {
-                    print("No 'prev' data found in JSON or it's in an unexpected format")
-                }
             } catch {
-                print("Error parsing JSON: \(error.localizedDescription)")
+                print("Error parsing now playing JSON: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self?.lastErrorMessage = "Error parsing data from API"
                 }
-                self?.scheduleNextUpdate(afterSeconds: 30)
+                self?.scheduleNextNowPlayingUpdate(afterSeconds: 30)
             }
         }.resume()
     }
     
-    private func scheduleUpdateBasedOnTimestamp(_ timestampString: String) {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+    // This function updates the scheduling based on the next_updated timestamp
+    private func scheduleNowPlayingUpdateBasedOnTimestamp(_ timestampString: String) {
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         
-        guard let nextUpdateDate = dateFormatter.date(from: timestampString) else {
-            print("Could not parse next_updated timestamp, using default interval")
-            scheduleNextUpdate(afterSeconds: 30)
+        // Try to parse with fractional seconds first
+        var nextUpdateDate: Date?
+        nextUpdateDate = dateFormatter.date(from: timestampString)
+        
+        // If that fails, try without fractional seconds
+        if nextUpdateDate == nil {
+            dateFormatter.formatOptions = [.withInternetDateTime]
+            nextUpdateDate = dateFormatter.date(from: timestampString)
+        }
+        
+        // If still nil, try a more forgiving approach
+        if nextUpdateDate == nil {
+            let fallbackFormatter = DateFormatter()
+            fallbackFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+            nextUpdateDate = fallbackFormatter.date(from: timestampString)
+        }
+        
+        guard let updateDate = nextUpdateDate else {
+            print("Could not parse next_updated timestamp: \(timestampString), using default interval")
+            scheduleNextNowPlayingUpdate(afterSeconds: 30)
             return
         }
         
-        let timeUntilNextUpdate = nextUpdateDate.timeIntervalSinceNow
+        // Calculate time until next update
+        let timeUntilNextUpdate = updateDate.timeIntervalSinceNow
         
-        // Add a small buffer (2 seconds) to ensure we update just after the API does
-        // If the timestamp is in the past, update now plus 2 seconds
-        let updateDelay = max(2, timeUntilNextUpdate + 2)
+        // Add a small buffer (1 second) to ensure we update just after the API does
+        // If the timestamp is in the past, update immediately with a 1 second delay
+        let updateDelay = max(1, timeUntilNextUpdate + 1)
         
-        print("Scheduling next update in \(updateDelay) seconds based on next_updated timestamp")
-        scheduleNextUpdate(afterSeconds: updateDelay)
+        print("Scheduling next update in \(updateDelay) seconds based on next_updated timestamp (\(timestampString))")
+        
+        // Log the calculated time for debugging
+        let updateDateTime = Date(timeIntervalSinceNow: updateDelay)
+        let logFormatter = DateFormatter()
+        logFormatter.dateFormat = "HH:mm:ss"
+        print("Next update will occur at approximately: \(logFormatter.string(from: updateDateTime))")
+        
+        scheduleNextNowPlayingUpdate(afterSeconds: updateDelay)
     }
     
-    private func scheduleNextUpdate(afterSeconds seconds: TimeInterval) {
+    private func scheduleNextNowPlayingUpdate(afterSeconds seconds: TimeInterval) {
         // Cancel any existing timer
-        timer?.invalidate()
+        nowPlayingTimer?.invalidate()
         
         // Create new timer
-        timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
-            print("Timer fired - fetching latest tracks")
+        nowPlayingTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            print("Timer fired at \(Date()) - fetching latest track")
             self?.fetchNowPlaying()
         }
+        
+        // Add to RunLoop to prevent timer from being invalidated when app is in background
+        RunLoop.current.add(nowPlayingTimer!, forMode: .common)
     }
     
     private func processTrackData(_ track: [String: Any], isNowPlaying: Bool) -> Track? {
@@ -207,6 +236,134 @@ class TripleJAPI: ObservableObject {
         )
     }
     
+    // MARK: - Recent Tracks Functions
+    
+    func fetchRecentTracks() {
+        print("Fetching recent tracks...")
+        
+        URLSession.shared.dataTask(with: recentTracksURL) { [weak self] data, response, error in
+            if let error = error {
+                print("Error fetching recent tracks: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data else {
+                print("No data received from recent tracks API")
+                return
+            }
+            
+            do {
+                let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+                
+                if let items = json?["items"] as? [[String: Any]] {
+                    var tracks: [Track] = []
+                    
+                    for item in items {
+                        if let track = self?.processTrackData(item, isNowPlaying: false) {
+                            tracks.append(track)
+                        }
+                    }
+                    
+                    DispatchQueue.main.async {
+                        self?.recentTracks = tracks
+                        print("Updated recent tracks: \(tracks.count) items")
+                    }
+                }
+            } catch {
+                print("Error parsing recent tracks JSON: \(error.localizedDescription)")
+            }
+        }.resume()
+    }
+    
+    // MARK: - Program Info Functions
+    
+    func fetchProgramInfo() {
+        print("Fetching program info...")
+        
+        let programURL = createProgramInfoURL()
+        
+        URLSession.shared.dataTask(with: programURL) { [weak self] data, response, error in
+            if let error = error {
+                print("Error fetching program info: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data else {
+                print("No data received from program info API")
+                return
+            }
+            
+            do {
+                let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+                
+                if let items = json?["items"] as? [[String: Any]], let firstProgram = items.first {
+                    if let program = self?.processProgramData(firstProgram) {
+                        DispatchQueue.main.async {
+                            self?.currentProgram = program
+                            print("Updated current program: \(program.title)")
+                        }
+                    }
+                    
+                    // Schedule next program info update (hourly)
+                    self?.scheduleNextProgramInfoUpdate(afterSeconds: 3600)
+                }
+            } catch {
+                print("Error parsing program info JSON: \(error.localizedDescription)")
+            }
+        }.resume()
+    }
+    
+    private func processProgramData(_ programData: [String: Any]) -> Program? {
+        guard let title = programData["title"] as? String else {
+            return nil
+        }
+        
+        // Extract host/presenter information
+        var presenter = ""
+        if let hosts = programData["hosts"] as? [[String: Any]], let firstHost = hosts.first {
+            presenter = firstHost["name"] as? String ?? ""
+        }
+        
+        // Extract program image
+        var imageURL = URL(string: "https://www.abc.net.au/cm/rimage/11948498-1x1-large.png?v=2")!
+        if let images = programData["images"] as? [[String: Any]], let firstImage = images.first,
+           let urlString = firstImage["url"] as? String, let url = URL(string: urlString) {
+            imageURL = url
+        }
+        
+        // Extract start and end times
+        var startTime = ""
+        var endTime = ""
+        if let from = programData["from"] as? String {
+            startTime = formatProgramTime(from)
+        }
+        if let to = programData["to"] as? String {
+            endTime = formatProgramTime(to)
+        }
+        
+        return Program(
+            title: title,
+            presenter: presenter,
+            image: imageURL,
+            startTime: startTime,
+            endTime: endTime,
+            description: programData["description"] as? String ?? ""
+        )
+    }
+    
+    private func scheduleNextProgramInfoUpdate(afterSeconds seconds: TimeInterval) {
+        // Cancel any existing timer
+        programInfoTimer?.invalidate()
+        
+        // Create new timer
+        programInfoTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            print("Program info timer fired - fetching latest program info")
+            self?.fetchProgramInfo()
+        }
+    }
+    
+    // MARK: - Helper Functions
+    
     private func formatTimestamp(_ timestamp: String) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
@@ -232,66 +389,24 @@ class TripleJAPI: ObservableObject {
         }
     }
     
-    func loadRecentTracks() {
-        // Get tracks from CoreData to supplement API tracks
-        let savedTracks = TrackStore.shared.fetchRecentTracks(limit: 10)
-        print("DEBUG: Fetched \(savedTracks.count) tracks from CoreData")
+    private func formatProgramTime(_ timestamp: String) -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
         
-        // Combine both sources and remove duplicates (by title and artist)
-        var combinedTracks = recentTracksFromAPI
-        print("DEBUG: Starting with \(combinedTracks.count) tracks from API")
-        
-        for track in savedTracks {
-            // Check if track already exists in our list
-            let exists = combinedTracks.contains { existingTrack in
-                existingTrack.title == track.title && existingTrack.artist == track.artist
-            }
-            
-            if !exists {
-                combinedTracks.append(track)
-                print("DEBUG: Added track from CoreData: \(track.title) by \(track.artist)")
-            } else {
-                print("DEBUG: Skipped duplicate track: \(track.title) by \(track.artist)")
-            }
+        guard let date = dateFormatter.date(from: timestamp) else {
+            return ""
         }
         
-        print("DEBUG: Combined track count before sorting: \(combinedTracks.count)")
-        
-        // Sort by time (most recent first)
-        combinedTracks.sort { track1, track2 in
-            // Create a helper function to convert string time to value for sorting
-            let timeValue1 = self.timeValueForSorting(track1.playedAt)
-            let timeValue2 = self.timeValueForSorting(track2.playedAt)
-            return timeValue1 > timeValue2  // Change < to > to reverse the order
-        }
-        
-        // Take only the first 5 tracks
-        let limitedTracks = Array(combinedTracks.prefix(5))
-        print("DEBUG: Final limited track count: \(limitedTracks.count)")
-        
-        self.recentTracks = limitedTracks
-        print("Updated recent tracks with combined data: \(limitedTracks.count) items")
-    }
-
-    // Helper function for sorting
-    private func timeValueForSorting(_ timeString: String) -> Int {
-        if timeString.contains("Just now") || timeString == "Now" {
-            return 0
-        } else if timeString.contains("m ago") {
-            if let minutes = Int(timeString.replacingOccurrences(of: "m ago", with: "")) {
-                return minutes
-            }
-        } else if timeString.contains("h ago") {
-            if let hours = Int(timeString.replacingOccurrences(of: "h ago", with: "")) {
-                return hours * 60  // Convert hours to minutes for comparison
-            }
-        }
-        return 999999 // Put at the end if we can't parse
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "h:mm a"
+        return timeFormatter.string(from: date)
     }
     
     deinit {
-        timer?.invalidate()
-        timer = nil
+        nowPlayingTimer?.invalidate()
+        programInfoTimer?.invalidate()
+        nowPlayingTimer = nil
+        programInfoTimer = nil
         print("TripleJAPI deinitializing")
     }
 }
